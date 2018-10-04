@@ -1,0 +1,196 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# Set-up
+
+```{r set-up, warning=FALSE, paged.print=FALSE}
+library(tidyverse)
+library(rstan)
+options(mc.cores = parallel::detectCores())
+library(tidybayes)
+```
+
+# Preparing data
+
+```{r download-data, message=FALSE, warning=FALSE}
+
+fouls <- bind_rows(
+  
+  e0_1617 = read_csv("http://www.football-data.co.uk/mmz4281/1617/E0.csv") %>%
+    mutate(VAR = 0, Date = lubridate::dmy(Date), season = "s1617"),
+  
+  e0_1718 = read_csv("http://www.football-data.co.uk/mmz4281/1718/E0.csv") %>%
+    mutate(VAR = 0, Date = lubridate::dmy(Date), season = "s1718"),
+  
+  e0_1819 = read_csv("http://www.football-data.co.uk/mmz4281/1819/E0.csv") %>%
+    mutate(VAR = 0, Date = lubridate::dmy(Date), season = "s1819"),
+  
+  f1_1617 = read_csv("http://www.football-data.co.uk/mmz4281/1617/F1.csv") %>%
+    mutate(VAR = 0, Date = lubridate::dmy(Date), season = "s1617"),
+
+  f1_1718 = read_csv("http://www.football-data.co.uk/mmz4281/1718/F1.csv") %>%
+    mutate(VAR = 0, Date = lubridate::dmy(Date), season = "s1718"),
+
+  f1_1819 = read_csv("http://www.football-data.co.uk/mmz4281/1819/F1.csv") %>%
+    mutate(VAR = 0, Date = lubridate::dmy(Date), season = "s1819"),
+  
+  d1_1617 = read_csv("http://www.football-data.co.uk/mmz4281/1617/D1.csv") %>%
+    mutate(VAR = 0, Date = lubridate::dmy(Date), season = "s1617"),
+
+  d1_1718 = read_csv("http://www.football-data.co.uk/mmz4281/1718/D1.csv") %>%
+    mutate(VAR = 1, Date = lubridate::dmy(Date), season = "s1718"),
+
+  d1_1819 = read_csv("http://www.football-data.co.uk/mmz4281/1819/D1.csv") %>%
+    mutate(VAR = 1, Date = lubridate::dmy(Date), season = "s1819"),
+
+  i1_1617 = read_csv("http://www.football-data.co.uk/mmz4281/1617/I1.csv") %>%
+    mutate(VAR = 0, Date = lubridate::dmy(Date), season = "s1617"),
+
+  i1_1718 = read_csv("http://www.football-data.co.uk/mmz4281/1718/I1.csv") %>%
+    mutate(VAR = 1, Date = lubridate::dmy(Date), season = "s1718"),
+
+  i1_1819 = read_csv("http://www.football-data.co.uk/mmz4281/1819/I1.csv") %>%
+    mutate(VAR = 1, Date = lubridate::dmy(Date), season = "s1819"),
+
+  sp1_1617 = read_csv("http://www.football-data.co.uk/mmz4281/1617/SP1.csv") %>%
+    mutate(VAR = 0, Date = lubridate::dmy(Date), season = "s1617"),
+
+  sp1_1718 = read_csv("http://www.football-data.co.uk/mmz4281/1718/SP1.csv") %>%
+    mutate(VAR = 0, Date = lubridate::dmy(Date), season = "s1718"),
+
+  sp1_1819 = read_csv("http://www.football-data.co.uk/mmz4281/1819/SP1.csv") %>%
+    mutate(VAR = 1, Date = lubridate::dmy(Date), season = "s1819")
+) %>%
+  select(Div:AwayTeam, HF, AF, VAR, season) %>%
+  filter(!is.na(HF), !is.na(AF))
+
+```
+
+
+```{r split-data}
+home_fouls <- fouls %>% 
+  select(Div, Date, HomeTeam, HF, VAR, season)
+away_fouls <- fouls %>%
+  select(Div, Date, AwayTeam, AF, VAR, season)
+```
+
+```{r data-as-list}
+X <- model.matrix(~ VAR + season + Div, fouls)
+
+fac_home <- factor(home_fouls$HomeTeam)
+fac_away <- factor(away_fouls$AwayTeam)
+fac <- fct_unify(list(fac_home, fac_away))
+
+stan.data <- list(N = nrow(X),
+                  away_fouls = away_fouls$AF,
+                  home_fouls = home_fouls$HF,
+                  X = X,
+                  k = ncol(X),
+                  home_team = as.numeric(fac[[1]]),
+                  away_team = as.numeric(fac[[2]]),
+                  N_teams = length(levels(fac[[1]])))
+```
+
+
+# Descriptive statistics
+
+# Statistical model
+
+
+
+
+
+```{r}
+sims <- 4000
+iterations <- (sims/parallel::detectCores())*2
+
+posterior <- rstan::stan(file = "model/bivar_lognorm_pois.stan", data = stan.data, iter = iterations, 
+                         control = list(max_treedepth = 12, adapt_delta = 0.85))
+```
+
+```{r}
+print(posterior, pars = c("home_sd", "away_sd", "rho", "home_team_sd", "away_team_sd"))
+```
+
+```{r}
+home_beta <- as.matrix(posterior, pars = "home_beta")
+away_beta <- as.matrix(posterior, pars = "away_beta")
+
+```
+
+```{r}
+home_sd <- as.matrix(posterior, pars = "home_sd")
+away_sd <- as.matrix(posterior, pars = "away_sd")
+
+home <- as.matrix(posterior, pars = "home")
+colnames(home) <- levels(fac_home)
+
+away <- as.matrix(posterior, pars = "away")
+colnames(away) <- levels(fac_away)
+```
+
+```{r}
+Sigma <- as.matrix(posterior, pars = "Sigma")
+Sigma <- array(Sigma, dim = c(4000, 2, 2))
+L_Sigma <- apply(Sigma, MARGIN = 1, FUN = function(X){t(chol(X))})
+dim(L_Sigma) <- c(2,2,4000)
+Z <- t(apply(L_Sigma, MARGIN = 3, FUN = function(X) {X %*% matrix(rnorm(2), nrow = 2)}))
+```
+
+```{r}
+# Reference: Germany (DivD1), season: 16/17
+
+X_tilde <- tribble(
+  ~`(Intercept)`, ~VAR, ~seasons1718, ~seasons1819, ~DivE0, ~DivF1, ~DivI1, ~DivSP1,
+               1,    0,           0,             0,      0,      0,      0,       0,
+               1,    1,           0,             0,      0,      0,      0,       0
+) %>% as.matrix()
+
+X_tilde
+```
+
+```{r}
+Q_home <- exp(X_tilde %*% t(home_beta) + rnorm(4000, 0, home_sd) + t(Z)[1,])
+
+Q_away <- exp(X_tilde %*% t(away_beta) + rnorm(4000, 0, away_sd) + t(Z)[2,])
+
+Q <- Q_home + Q_away
+
+matrixStats::rowQuantiles(Q, probs = c(0.05, 0.25, 0.5, 0.75, 0.95))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
