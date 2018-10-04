@@ -1,5 +1,5 @@
 ---
-title: "R Notebook"
+title: "Analysis"
 output: html_notebook
 ---
 
@@ -93,14 +93,9 @@ stan.data <- list(N = nrow(X),
                   N_teams = length(levels(fac[[1]])))
 ```
 
-
 # Descriptive statistics
 
 # Statistical model
-
-
-
-
 
 ```{r}
 sims <- 4000
