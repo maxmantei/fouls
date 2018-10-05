@@ -5,11 +5,12 @@ output: html_notebook
 
 # Set-up
 
-```{r set-up, warning=FALSE, paged.print=FALSE}
+```{r set-up, message=FALSE, warning=FALSE, paged.print=FALSE}
+
 library(tidyverse)
 library(rstan)
 options(mc.cores = parallel::detectCores())
-library(tidybayes)
+
 ```
 
 # Preparing data
@@ -64,79 +65,134 @@ fouls <- bind_rows(
     mutate(VAR = 1, Date = lubridate::dmy(Date), season = "s1819")
 ) %>%
   select(Div:AwayTeam, HF, AF, VAR, season) %>%
-  filter(!is.na(HF), !is.na(AF))
+  filter(!is.na(HF), !is.na(AF)) %>%
+  rename("home_fouls" = "HF",
+         "home_team" = "HomeTeam",
+         "away_fouls" = "AF",
+         "away_team" = "AwayTeam",
+         "div" = "Div",
+         "date" = "Date")
 
 ```
 
-
 ```{r split-data}
-home_fouls <- fouls %>% 
-  select(Div, Date, HomeTeam, HF, VAR, season)
-away_fouls <- fouls %>%
-  select(Div, Date, AwayTeam, AF, VAR, season)
+
+home <- fouls %>% 
+  select(div, season, date, team = home_team, fouls = home_fouls, VAR)
+away <- fouls %>%
+  select(div, season, date, team = away_team, fouls = away_fouls, VAR)
+
 ```
 
 ```{r data-as-list}
-X <- model.matrix(~ VAR + season + Div, fouls)
 
-fac_home <- factor(home_fouls$HomeTeam)
-fac_away <- factor(away_fouls$AwayTeam)
+X <- model.matrix(~ VAR + season*div, fouls)
+
+X <- X[, sqrt(abs(diag(qr.R(qr(X))))) > 1]
+
+fac_home <- factor(home$team)
+fac_away <- factor(away$team)
 fac <- fct_unify(list(fac_home, fac_away))
 
 stan.data <- list(N = nrow(X),
-                  away_fouls = away_fouls$AF,
-                  home_fouls = home_fouls$HF,
+                  away_fouls = away$fouls,
+                  home_fouls = home$fouls,
                   X = X,
                   k = ncol(X),
                   home_team = as.numeric(fac[[1]]),
                   away_team = as.numeric(fac[[2]]),
-                  N_teams = length(levels(fac[[1]])))
+                  N_teams = length(levels(fac[[1]]))
+                  )
+
 ```
 
 # Descriptive statistics
 
 # Statistical model
 
-```{r}
-sims <- 4000
-iterations <- (sims/parallel::detectCores())*2
+```{r run-stan, message=FALSE, warning=FALSE, paged.print=FALSE}
 
-posterior <- rstan::stan(file = "model/bivar_lognorm_pois.stan", data = stan.data, iter = iterations, 
-                         control = list(max_treedepth = 12, adapt_delta = 0.85))
+sims <- 2000 # used also later for simulations
+iterations <- (sims / parallel::detectCores()) * 2
+
+posterior <-
+  rstan::stan(
+    file = "model/bivariate_lognormal_poisson.stan",
+    data = stan.data,
+    iter = iterations,
+    control = list(max_treedepth = 12,
+                   adapt_delta = 0.85)
+  )
+
 ```
 
-```{r}
+```{r save-posterior}
+
+write_rds(posterior, "posterior/bivariate_lognormal_poisson.rds")
+
+```
+
+## Results
+
+```{r print-betas}
+
+broom::tidyMCMC(posterior, pars = c("home_beta", "away_beta"), 
+                conf.int =  TRUE, conf.level = 0.9) %>% 
+  mutate(side = if_else(str_detect(term, "home"), "home", "away"),
+         term = rep(colnames(X), times = 2))
+
+```
+
+```{r print-hyperparameters}
+
 print(posterior, pars = c("home_sd", "away_sd", "rho", "home_team_sd", "away_team_sd"))
+
 ```
 
-```{r}
+## Simulations
+
+```{r extract-betas}
+
 home_beta <- as.matrix(posterior, pars = "home_beta")
 away_beta <- as.matrix(posterior, pars = "away_beta")
 
 ```
 
-```{r}
+```{r extract-re}
+
 home_sd <- as.matrix(posterior, pars = "home_sd")
 away_sd <- as.matrix(posterior, pars = "away_sd")
 
-home <- as.matrix(posterior, pars = "home")
-colnames(home) <- levels(fac_home)
+home_re <- as.matrix(posterior, pars = "home")
+colnames(home_re) <- levels(fac_home)
 
-away <- as.matrix(posterior, pars = "away")
-colnames(away) <- levels(fac_away)
+away_re <- as.matrix(posterior, pars = "away")
+colnames(away_re) <- levels(fac_away)
+
 ```
 
-```{r}
-Sigma <- as.matrix(posterior, pars = "Sigma")
-Sigma <- array(Sigma, dim = c(4000, 2, 2))
-L_Sigma <- apply(Sigma, MARGIN = 1, FUN = function(X){t(chol(X))})
-dim(L_Sigma) <- c(2,2,4000)
-Z <- t(apply(L_Sigma, MARGIN = 3, FUN = function(X) {X %*% matrix(rnorm(2), nrow = 2)}))
+```{r extract-sigma}
+
+L_Sigma <- posterior %>% 
+  as.matrix(pars = "Sigma") %>% 
+  array(dim = c(sims, 2, 2)) %>% 
+  apply(MARGIN = 1, FUN = function(X) {
+      t(chol(X))
+    })
+
+dim(L_Sigma) <- c(2, 2, sims)
+
+Z <- L_Sigma %>% 
+  apply(MARGIN = 3, FUN = function(X) {
+      X %*% matrix(rnorm(2), nrow = 2)
+    }) %>% 
+  t()
+
 ```
 
-```{r}
+```{r scenario}
+
 # Reference: Germany (DivD1), season: 16/17
-
 X_tilde <- tribble(
   ~`(Intercept)`, ~VAR, ~seasons1718, ~seasons1819, ~DivE0, ~DivF1, ~DivI1, ~DivSP1,
                1,    0,           0,             0,      0,      0,      0,       0,
@@ -144,19 +200,25 @@ X_tilde <- tribble(
 ) %>% as.matrix()
 
 X_tilde
+
 ```
 
-```{r}
-Q_home <- exp(X_tilde %*% t(home_beta) + rnorm(4000, 0, home_sd) + t(Z)[1,])
+```{r compute-expectations}
 
-Q_away <- exp(X_tilde %*% t(away_beta) + rnorm(4000, 0, away_sd) + t(Z)[2,])
+Q_home <- exp(X_tilde %*% t(home_beta) + rnorm(sims, 0, home_sd) + t(Z)[1,])
+Q_away <- exp(X_tilde %*% t(away_beta) + rnorm(sims, 0, away_sd) + t(Z)[2,])
 
 Q <- Q_home + Q_away
 
 matrixStats::rowQuantiles(Q, probs = c(0.05, 0.25, 0.5, 0.75, 0.95))
+
 ```
 
+```{r simulate-yrep}
 
+
+
+```
 
 
 

@@ -36,9 +36,11 @@ model{
   matrix[2,N] Z =  L_Sigma*z;
   
   home_beta[1] ~ normal(2.5, 1);
-  home_beta[2:k] ~ normal(0, 1);
+  home_beta[2] ~ normal(0, 1);
+  home_beta[3:k] ~ normal(0, 2.5);
   away_beta[1] ~ normal(2.5, 1);
-  away_beta[2:k] ~ normal(0, 1);
+  away_beta[2] ~ normal(0, 1);
+  away_beta[3:k] ~ normal(0, 2.5);
   
   home_sd ~ normal(0, 2.5);
   away_sd ~ normal(0, 2.5);
